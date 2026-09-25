@@ -207,11 +207,77 @@ class NRKAPIClient:
             )
         return sections
 
+    async def get_tv_pages(self) -> list[NRKPage]:
+        """Return browse pages exposed by NRK TV."""
+        data = await self._get("/tv/pages")
+        pages: list[NRKPage] = [
+            NRKPage(page_id="frontpage", title="Forsiden"),
+        ]
+        seen = {"frontpage"}
+        raw_pages = data.get("pageListItems", [])
+        if not isinstance(raw_pages, list):
+            raw_pages = []
+        for raw in raw_pages:
+            if not isinstance(raw, dict):
+                continue
+            page_id = raw.get("id")
+            if not isinstance(page_id, str) or not page_id:
+                page_id = path_tail(link_href(raw.get("_links", {}).get("self")))
+            title = raw.get("title") or raw.get("displayValue")
+            if (
+                not isinstance(page_id, str)
+                or not page_id
+                or page_id in seen
+                or not isinstance(title, str)
+                or not title
+            ):
+                continue
+            seen.add(page_id)
+            pages.append(
+                NRKPage(
+                    page_id=page_id,
+                    title=title,
+                    image_url=pick_image_url(raw.get("image")),
+                )
+            )
+        return pages
+
+    async def get_tv_page(self, page_id: str) -> list[NRKSection]:
+        """Return all sections and plugs for one NRK TV page."""
+        data = await self._get(f"/tv/pages/{page_id}")
+        sections: list[NRKSection] = []
+        for raw in data.get("sections", []):
+            if not isinstance(raw, dict):
+                continue
+            container = raw.get("included") or raw.get("placeholder")
+            if not isinstance(container, dict):
+                continue
+            plugs = tuple(
+                item for item in container.get("plugs", []) if isinstance(item, dict)
+            )
+            title = container.get("title")
+            if plugs:
+                sections.append(
+                    NRKSection(
+                        title=title if isinstance(title, str) and title else "NRK TV",
+                        plugs=plugs,
+                    )
+                )
+        return sections
+
     async def get_show(self, kind: NRKShowKind, show_id: str) -> NRKShow:
-        """Fetch podcast/series/one-off programme metadata."""
+        """Fetch podcast/radio/TV programme metadata."""
         if kind == "program":
             data = await self._get(f"/radio/catalog/programs/{show_id}")
             return self._program_to_show(data, show_id)
+
+        if kind == "tv_program":
+            data = await self._get(f"/tv/catalog/programs/{show_id}")
+            return self._tv_program_to_show(data, show_id)
+
+        if kind == "tv_series":
+            data = await self._get(f"/tv/catalog/series/{show_id}")
+            return self._tv_series_to_show(data, show_id)
 
         data = await self._get(f"/radio/catalog/{kind}/{show_id}")
         series = data.get("series")
@@ -242,10 +308,47 @@ class NRKAPIClient:
     async def iter_show_episodes(
         self, kind: NRKShowKind, show_id: str
     ) -> AsyncGenerator[NRKEpisode]:
-        """Iterate every episode for a podcast or radio series."""
+        """Iterate every episode for a podcast, radio series or NRK TV series."""
         if kind == "program":
             data = await self._get(f"/radio/catalog/programs/{show_id}")
-            yield self._parse_episode(data, kind="program", parent_id=show_id, fallback_id=show_id)
+            yield self._parse_episode(
+                data, kind="program", parent_id=show_id, fallback_id=show_id
+            )
+            return
+
+        if kind == "tv_program":
+            data = await self._get(f"/tv/catalog/programs/{show_id}")
+            yield self._parse_tv_program(
+                data, kind="tv_program", parent_id=show_id, fallback_id=show_id
+            )
+            return
+
+        if kind == "tv_series":
+            series_data = await self._get(f"/tv/catalog/series/{show_id}")
+            links = series_data.get("_links", {})
+            seasons = links.get("seasons", []) if isinstance(links, dict) else []
+            for season in seasons:
+                if not isinstance(season, dict):
+                    continue
+                season_name = season.get("name")
+                if not isinstance(season_name, str) or not season_name:
+                    continue
+                season_data = await self._get(
+                    f"/tv/catalog/series/{show_id}/seasons/{season_name}"
+                )
+                embedded = season_data.get("_embedded", {})
+                if not isinstance(embedded, dict):
+                    continue
+                raw_episodes = embedded.get("episodes")
+                if not isinstance(raw_episodes, list):
+                    raw_episodes = embedded.get("instalments", [])
+                if not isinstance(raw_episodes, list):
+                    continue
+                for raw in raw_episodes:
+                    if isinstance(raw, dict):
+                        yield self._parse_episode(
+                            raw, kind="tv_series", parent_id=show_id
+                        )
             return
 
         page = 1
@@ -267,12 +370,20 @@ class NRKAPIClient:
     async def get_episode(
         self, kind: NRKShowKind, parent_id: str, episode_id: str
     ) -> NRKEpisode:
-        """Fetch one podcast/radio episode."""
+        """Fetch one podcast, radio or TV episode."""
         if kind == "podcast":
             data = await self._get(
                 f"/radio/catalog/podcast/{parent_id}/episodes/{episode_id}"
             )
-            return self._parse_episode(data, kind=kind, parent_id=parent_id, fallback_id=episode_id)
+            return self._parse_episode(
+                data, kind=kind, parent_id=parent_id, fallback_id=episode_id
+            )
+
+        if kind in {"tv_series", "tv_program"}:
+            data = await self._get(f"/tv/catalog/programs/{episode_id}")
+            return self._parse_tv_program(
+                data, kind=kind, parent_id=parent_id, fallback_id=episode_id
+            )
 
         data = await self._get(f"/radio/catalog/programs/{episode_id}")
         return self._parse_episode(
@@ -347,6 +458,87 @@ class NRKAPIClient:
         The provider currently exposes only the verified radio catalogue.
         """
         return await self.resolve_manifest(f"/playback/manifest/program/{program_id}")
+
+    def tv_show_from_plug(self, plug: dict[str, Any]) -> NRKShow | None:
+        """Convert an NRK TV page series/program plug into a Podcast-like show."""
+        target_type = plug.get("targetType")
+        content = plug.get("displayContractContent")
+        if not isinstance(content, dict):
+            content = {}
+
+        if target_type == "series":
+            raw = plug.get("series")
+            if not isinstance(raw, dict):
+                return None
+            show_id = raw.get("seriesId")
+            if not isinstance(show_id, str) or not show_id:
+                show_id = path_tail(link_href(plug.get("_links", {}).get("series")))
+            if not show_id:
+                return None
+            title = content.get("contentTitle") or raw.get("seriesTitle") or show_id
+            return NRKShow(
+                kind="tv_series",
+                show_id=show_id,
+                title=str(title),
+                subtitle=(
+                    str(content["contentDescription"])
+                    if isinstance(content.get("contentDescription"), str)
+                    else None
+                ),
+                image_url=pick_image_url(content.get("displayContractImage"))
+                or pick_image_url(raw.get("image")),
+            )
+
+        if target_type in {"program", "standaloneProgram"}:
+            raw = plug.get("program") or plug.get("standaloneProgram")
+            if not isinstance(raw, dict):
+                return None
+            show_id = raw.get("programId") or raw.get("prfId")
+            if not isinstance(show_id, str) or not show_id:
+                return None
+            title = content.get("contentTitle") or raw.get("programTitle") or show_id
+            return NRKShow(
+                kind="tv_program",
+                show_id=show_id,
+                title=str(title),
+                image_url=pick_image_url(content.get("displayContractImage"))
+                or pick_image_url(raw.get("image")),
+                total_episodes=1,
+            )
+
+        return None
+
+    def tv_episode_from_plug(self, plug: dict[str, Any]) -> NRKEpisode | None:
+        """Convert a directly playable NRK TV page episode plug."""
+        if plug.get("targetType") != "episode":
+            return None
+        raw = plug.get("episode")
+        if not isinstance(raw, dict):
+            return None
+        program_id = raw.get("programId") or raw.get("prfId")
+        if not isinstance(program_id, str) or not program_id:
+            return None
+        series_id = raw.get("seriesId")
+        kind: NRKShowKind
+        if isinstance(series_id, str) and series_id:
+            kind = "tv_series"
+            parent_id = series_id
+        else:
+            kind = "tv_program"
+            parent_id = program_id
+        content = plug.get("displayContractContent")
+        if not isinstance(content, dict):
+            content = {}
+        title = content.get("contentTitle") or raw.get("episodeTitle") or program_id
+        return NRKEpisode(
+            kind=kind,
+            parent_id=parent_id,
+            episode_id=program_id,
+            title=str(title),
+            image_url=pick_image_url(content.get("displayContractImage"))
+            or pick_image_url(raw.get("image")),
+            available=True,
+        )
 
     def channel_from_plug(self, plug: dict[str, Any]) -> NRKChannel | None:
         """Convert a radio page channel plug into a normalized channel."""
@@ -485,6 +677,92 @@ class NRKAPIClient:
             )
 
         return None
+
+    def _tv_series_to_show(self, data: dict[str, Any], series_id: str) -> NRKShow:
+        """Convert an NRK TV series payload into a Podcast-like show."""
+        series_type = data.get("seriesType")
+        body = data.get(series_type) if isinstance(series_type, str) else None
+        if not isinstance(body, dict):
+            for key in ("sequential", "standard", "news"):
+                candidate = data.get(key)
+                if isinstance(candidate, dict):
+                    body = candidate
+                    break
+        if not isinstance(body, dict):
+            body = data
+        title, subtitle = self._title_parts(body, fallback=series_id)
+        return NRKShow(
+            kind="tv_series",
+            show_id=series_id,
+            title=title,
+            subtitle=subtitle,
+            image_url=pick_image_url(body.get("image")),
+        )
+
+    def _tv_program_to_show(self, data: dict[str, Any], program_id: str) -> NRKShow:
+        """Convert an NRK TV programme payload into a one-episode show."""
+        info = data.get("programInformation")
+        if not isinstance(info, dict):
+            info = data
+        title, subtitle = self._title_parts(info, fallback=program_id)
+        return NRKShow(
+            kind="tv_program",
+            show_id=program_id,
+            title=title,
+            subtitle=subtitle,
+            image_url=pick_image_url(info.get("image")),
+            total_episodes=1,
+        )
+
+    def _parse_tv_program(
+        self,
+        data: dict[str, Any],
+        *,
+        kind: NRKShowKind,
+        parent_id: str,
+        fallback_id: str,
+    ) -> NRKEpisode:
+        """Normalize the NRK TV program detail payload."""
+        info = data.get("programInformation")
+        if not isinstance(info, dict):
+            info = data
+        title, subtitle = self._title_parts(info, fallback=fallback_id)
+
+        more = data.get("moreInformation")
+        duration = 0
+        published = None
+        if isinstance(more, dict):
+            duration_data = more.get("duration")
+            if isinstance(duration_data, dict):
+                seconds = duration_data.get("seconds")
+                if isinstance(seconds, (int, float)):
+                    duration = int(seconds)
+            transmissions = more.get("transmissions")
+            if isinstance(transmissions, dict):
+                first = transmissions.get("first")
+                if isinstance(first, dict):
+                    candidate = first.get("date") or first.get("displayValue")
+                    if isinstance(candidate, str):
+                        published = candidate
+
+        availability = info.get("availability")
+        available = True
+        if isinstance(availability, dict):
+            status = availability.get("status")
+            if isinstance(status, str):
+                available = status in {"available", "expires"}
+
+        return NRKEpisode(
+            kind=kind,
+            parent_id=parent_id,
+            episode_id=fallback_id,
+            title=title,
+            subtitle=subtitle,
+            duration=max(0, duration),
+            published=published,
+            image_url=pick_image_url(info.get("image")),
+            available=available,
+        )
 
     def _program_to_show(self, data: dict[str, Any], program_id: str) -> NRKShow:
         """Convert a programme catalogue payload into a one-episode show."""
