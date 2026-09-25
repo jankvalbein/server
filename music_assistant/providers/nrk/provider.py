@@ -213,7 +213,8 @@ class NRKProvider(MusicProvider):
             else:
                 raise UnplayableMediaError(f"NRK does not serve {media_type}")
         except NRKNotFoundError as err:
-            raise MediaNotFoundError(f"NRK media {item_id} not found") from err+        except NRKNotPlayableError as err:
+            raise MediaNotFoundError(f"NRK media {item_id} not found") from err
+        except NRKNotPlayableError as err:
             raise UnplayableMediaError(f"NRK media {item_id} is not playable: {err}") from err
 
         is_hls = stream.format.upper() == "HLS" or ".m3u8" in stream.url.lower()
