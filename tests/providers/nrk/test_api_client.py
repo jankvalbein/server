@@ -222,3 +222,109 @@ async def test_program_payload_uses_temporal_titles_and_duration_object() -> Non
     assert show.subtitle == "Live fra Rockefeller"
     assert episode.title == "Konsert fra arkivet"
     assert episode.duration == 3600
+
+
+async def test_page_plug_metadata_uses_nrk_human_readable_titles() -> None:
+    client = make_client({})
+
+    podcast = client.show_from_plug(
+        {
+            "type": "podcast",
+            "title": "Fallback title",
+            "tagline": "Nyheter og aktualitet.",
+            "image": {"webImages": [{"uri": "https://example/plug.jpg", "width": 960}]},
+            "podcast": {
+                "podcastId": "desken_brenner",
+                "podcastTitle": "Desken brenner",
+                "numberOfEpisodes": 42,
+            },
+        }
+    )
+    assert podcast is not None
+    assert podcast.show_id == "desken_brenner"
+    assert podcast.title == "Desken brenner"
+    assert podcast.subtitle == "Nyheter og aktualitet."
+    assert podcast.total_episodes == 42
+    assert podcast.image_url == "https://example/plug.jpg"
+
+    series = client.show_from_plug(
+        {
+            "type": "series",
+            "series": {
+                "seriesId": "studio-2",
+                "seriesTitle": "Studio 2",
+                "numberOfEpisodes": 12,
+            },
+        }
+    )
+    assert series is not None
+    assert series.show_id == "studio-2"
+    assert series.title == "Studio 2"
+
+    program = client.show_from_plug(
+        {
+            "type": "standaloneProgram",
+            "standaloneProgram": {
+                "programId": "ABC123",
+                "programTitle": "Konsert fra arkivet",
+            },
+        }
+    )
+    assert program is not None
+    assert program.kind == "program"
+    assert program.show_id == "ABC123"
+    assert program.title == "Konsert fra arkivet"
+
+
+async def test_page_plug_metadata_normalizes_channel_and_episode_titles() -> None:
+    client = make_client({})
+
+    channel = client.channel_from_plug(
+        {
+            "type": "channel",
+            "channel": {
+                "channelId": "nrk-p1",
+                "channelTitle": "NRK P1",
+            },
+        }
+    )
+    assert channel is not None
+    assert channel.channel_id == "nrk-p1"
+    assert channel.title == "NRK P1"
+
+    podcast_episode = client.episode_from_plug(
+        {
+            "type": "podcastEpisode",
+            "podcastEpisode": {
+                "episodeId": "episode-1",
+                "podcastId": "sentralbordet",
+                "podcastTitle": "Sentralbordet på NRK",
+                "podcastEpisodeTitle": "Kan du høre meg gjennom gulvet?",
+                "duration": "PT31M",
+                "imageUrl": "https://example/episode.jpg",
+            },
+        }
+    )
+    assert podcast_episode is not None
+    assert podcast_episode.parent_id == "sentralbordet"
+    assert podcast_episode.episode_id == "episode-1"
+    assert podcast_episode.title == "Kan du høre meg gjennom gulvet?"
+    assert podcast_episode.duration == 1860
+
+    series_episode = client.episode_from_plug(
+        {
+            "type": "episode",
+            "episode": {
+                "programId": "MUHR12345678",
+                "seriesId": "studio-2",
+                "seriesTitle": "Studio 2",
+                "episodeTitle": "Dagens sending",
+                "duration": "PT57M",
+            },
+        }
+    )
+    assert series_episode is not None
+    assert series_episode.kind == "series"
+    assert series_episode.parent_id == "studio-2"
+    assert series_episode.episode_id == "MUHR12345678"
+    assert series_episode.title == "Dagens sending"
