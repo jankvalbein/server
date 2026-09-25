@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from mashumaro.mixins.dict import DataClassDictMixin
 
-NRKShowKind = Literal["podcast", "series", "program"]
+NRKShowKind = Literal["podcast", "series", "program", "tv_series", "tv_program"]
 
 
 class NRKError(Exception):
@@ -26,7 +26,7 @@ class NRKNotPlayableError(NRKError):
 
 @dataclass(slots=True, frozen=True)
 class NRKPage(DataClassDictMixin):
-    """A top-level NRK Radio page."""
+    """A top-level NRK Radio or NRK TV page."""
 
     page_id: str
     title: str
@@ -35,7 +35,7 @@ class NRKPage(DataClassDictMixin):
 
 @dataclass(slots=True, frozen=True)
 class NRKSection(DataClassDictMixin):
-    """A section on an NRK Radio page."""
+    """A section on an NRK Radio or NRK TV page."""
 
     title: str
     plugs: tuple[dict[str, Any], ...]
@@ -43,7 +43,7 @@ class NRKSection(DataClassDictMixin):
 
 @dataclass(slots=True, frozen=True)
 class NRKShow(DataClassDictMixin):
-    """A podcast, radio series or one-off radio programme."""
+    """A podcast, radio/TV series or one-off programme."""
 
     kind: NRKShowKind
     show_id: str
@@ -55,7 +55,7 @@ class NRKShow(DataClassDictMixin):
 
 @dataclass(slots=True, frozen=True)
 class NRKEpisode(DataClassDictMixin):
-    """One playable NRK podcast/radio episode."""
+    """One playable NRK podcast, radio or TV episode."""
 
     kind: NRKShowKind
     parent_id: str
