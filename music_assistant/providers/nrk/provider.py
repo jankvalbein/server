@@ -99,22 +99,28 @@ class NRKProvider(MusicProvider):
         if parts == [BROWSE_RADIO]:
             return [self._page_folder(page) for page in await self._get_pages()]
 
+        # The MA frontend turns every path segment into a clickable breadcrumb.
+        # Keep our structural "page" segment browseable instead of raising KeyError
+        # when a user clicks that breadcrumb.
+        if parts == [BROWSE_RADIO, "page"]:
+            return [self._page_folder(page) for page in await self._get_pages()]
+
         if len(parts) == 3 and parts[0] == BROWSE_RADIO and parts[1] == "page":
             page_id = parts[2]
             sections = await self._get_page(page_id)
-            return [
-                BrowseFolder(
-                    item_id=f"{page_id}:{idx}",
-                    provider=self.instance_id,
-                    path=(
-                        f"{self.instance_id}://{BROWSE_RADIO}/page/"
-                        f"{quote(page_id, safe='')}/section/{idx}"
-                    ),
-                    name=section.title,
-                )
-                for idx, section in enumerate(sections)
-                if section.plugs
-            ]
+            return self._section_folders(page_id, sections)
+
+        # "section" is another structural segment exposed as a breadcrumb by MA.
+        # Browsing it should take the user back to the list of sections for the page.
+        if (
+            len(parts) == 4
+            and parts[0] == BROWSE_RADIO
+            and parts[1] == "page"
+            and parts[3] == "section"
+        ):
+            page_id = parts[2]
+            sections = await self._get_page(page_id)
+            return self._section_folders(page_id, sections)
 
         if (
             len(parts) == 5
@@ -290,6 +296,24 @@ class NRKProvider(MusicProvider):
                 continue
             self.logger.debug("Skipping unsupported NRK page plug type: %s", plug.get("type"))
         return items
+
+    def _section_folders(
+        self, page_id: str, sections: list[NRKSection]
+    ) -> list[BrowseFolder]:
+        """Build browse folders for the sections of one NRK Radio page."""
+        return [
+            BrowseFolder(
+                item_id=f"{page_id}:{idx}",
+                provider=self.instance_id,
+                path=(
+                    f"{self.instance_id}://{BROWSE_RADIO}/page/"
+                    f"{quote(page_id, safe='')}/section/{idx}"
+                ),
+                name=section.title,
+            )
+            for idx, section in enumerate(sections)
+            if section.plugs
+        ]
 
     def _page_folder(self, page: NRKPage) -> BrowseFolder:
         """Build a BrowseFolder for an NRK Radio page."""
