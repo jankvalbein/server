@@ -427,6 +427,8 @@ class NRKProvider(MusicProvider):
         if episode.kind == "podcast":
             raw = plug.get("podcastEpisode")
             if isinstance(raw, dict):
+                if isinstance(raw.get("podcastTitle"), str) and raw["podcastTitle"]:
+                    return raw["podcastTitle"]
                 podcast = raw.get("podcast")
                 if isinstance(podcast, dict):
                     titles = podcast.get("titles")
@@ -435,6 +437,8 @@ class NRKProvider(MusicProvider):
         if episode.kind == "series":
             raw = plug.get("episode")
             if isinstance(raw, dict):
+                if isinstance(raw.get("seriesTitle"), str) and raw["seriesTitle"]:
+                    return raw["seriesTitle"]
                 series = raw.get("series")
                 if isinstance(series, dict):
                     titles = series.get("titles")
