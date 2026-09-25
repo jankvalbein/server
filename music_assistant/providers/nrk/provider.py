@@ -61,6 +61,7 @@ SUPPORTED_FEATURES = {
 }
 
 BROWSE_RADIO = "radio"
+BROWSE_TV = "tv"
 
 
 class NRKProvider(MusicProvider):
@@ -93,7 +94,13 @@ class NRKProvider(MusicProvider):
                     provider=self.instance_id,
                     path=f"{self.instance_id}://{BROWSE_RADIO}",
                     name="NRK Radio",
-                )
+                ),
+                BrowseFolder(
+                    item_id=BROWSE_TV,
+                    provider=self.instance_id,
+                    path=f"{self.instance_id}://{BROWSE_TV}",
+                    name="NRK TV (lyd)",
+                ),
             ]
 
         if parts == [BROWSE_RADIO]:
@@ -137,6 +144,25 @@ class NRKProvider(MusicProvider):
             if section_index < 0 or section_index >= len(sections):
                 raise KeyError(path)
             return self._render_section(sections[section_index])
+
+        if parts == [BROWSE_TV]:
+            return [self._tv_page_folder(page) for page in await self._get_tv_pages()]
+
+        if len(parts) == 2 and parts[0] == BROWSE_TV:
+            page_id = parts[1]
+            sections = await self._get_tv_page(page_id)
+            return self._tv_section_folders(page_id, sections)
+
+        if len(parts) == 3 and parts[0] == BROWSE_TV:
+            page_id = parts[1]
+            try:
+                section_index = int(parts[2])
+            except ValueError as err:
+                raise KeyError(path) from err
+            sections = await self._get_tv_page(page_id)
+            if section_index < 0 or section_index >= len(sections):
+                raise KeyError(path)
+            return self._render_tv_section(sections[section_index])
 
         raise KeyError(path)
 
@@ -243,6 +269,16 @@ class NRKProvider(MusicProvider):
         )
 
     @use_cache(3600 * 6, base_class=NRKPage)
+    async def _get_tv_pages(self) -> list[NRKPage]:
+        """Cache the relatively static NRK TV page list."""
+        return await self._client.get_tv_pages()
+
+    @use_cache(1800, base_class=NRKSection)
+    async def _get_tv_page(self, page_id: str) -> list[NRKSection]:
+        """Cache one curated NRK TV page briefly because its contents can change."""
+        return await self._client.get_tv_page(page_id)
+
+    @use_cache(3600 * 6, base_class=NRKPage)
     async def _get_pages(self) -> list[NRKPage]:
         """Cache the relatively static NRK Radio page list."""
         return await self._client.get_radio_pages()
@@ -296,6 +332,72 @@ class NRKProvider(MusicProvider):
                 continue
             self.logger.debug("Skipping unsupported NRK page plug type: %s", plug.get("type"))
         return items
+
+    def _render_tv_section(
+        self, section: NRKSection
+    ) -> list[MediaItemType | ItemMapping | BrowseFolder]:
+        """Convert NRK TV page plugs to audio-oriented Music Assistant items."""
+        items: list[MediaItemType | ItemMapping | BrowseFolder] = []
+        seen_shows: set[str] = set()
+        for plug in section.plugs:
+            if show := self._client.tv_show_from_plug(plug):
+                item_id = self._show_id(show.kind, show.show_id)
+                if item_id not in seen_shows:
+                    seen_shows.add(item_id)
+                    items.append(self._podcast_item(show))
+                continue
+
+            if episode := self._client.tv_episode_from_plug(plug):
+                parent_title = episode.title
+                raw = plug.get("episode")
+                if isinstance(raw, dict):
+                    series_title = raw.get("seriesTitle")
+                    if isinstance(series_title, str) and series_title:
+                        parent_title = series_title
+                parent = ItemMapping(
+                    media_type=MediaType.PODCAST,
+                    item_id=self._show_id(episode.kind, episode.parent_id),
+                    provider=self.instance_id,
+                    name=parent_title,
+                )
+                items.append(self._episode_item(episode, parent, position=0))
+                continue
+
+            self.logger.debug(
+                "Skipping unsupported NRK TV page plug type: %s",
+                plug.get("targetType"),
+            )
+        return items
+
+    def _tv_section_folders(
+        self, page_id: str, sections: list[NRKSection]
+    ) -> list[BrowseFolder]:
+        """Build browse folders for the sections of one NRK TV page."""
+        return [
+            BrowseFolder(
+                item_id=f"{page_id}:{idx}",
+                provider=self.instance_id,
+                path=(
+                    f"{self.instance_id}://{BROWSE_TV}/"
+                    f"{quote(page_id, safe='')}/{idx}"
+                ),
+                name=section.title,
+            )
+            for idx, section in enumerate(sections)
+            if section.plugs
+        ]
+
+    def _tv_page_folder(self, page: NRKPage) -> BrowseFolder:
+        """Build a BrowseFolder for an NRK TV page."""
+        folder = BrowseFolder(
+            item_id=page.page_id,
+            provider=self.instance_id,
+            path=f"{self.instance_id}://{BROWSE_TV}/{quote(page.page_id, safe='')}",
+            name=page.title,
+        )
+        if page.image_url:
+            folder.image = self._image(page.image_url)
+        return folder
 
     def _section_folders(
         self, page_id: str, sections: list[NRKSection]
@@ -468,7 +570,11 @@ class NRKProvider(MusicProvider):
     @staticmethod
     def _parse_show_id(item_id: str) -> tuple[NRKShowKind, str]:
         parts = item_id.split("/", 1)
-        if len(parts) != 2 or parts[0] not in {"podcast", "series", "program"} or not parts[1]:
+        if (
+            len(parts) != 2
+            or parts[0] not in {"podcast", "series", "program", "tv_series", "tv_program"}
+            or not parts[1]
+        ):
             raise MediaNotFoundError(f"Invalid NRK programme id: {item_id}")
         return parts[0], parts[1]  # type: ignore[return-value]
 
@@ -477,7 +583,7 @@ class NRKProvider(MusicProvider):
         parts = item_id.split("/", 2)
         if (
             len(parts) != 3
-            or parts[0] not in {"podcast", "series", "program"}
+            or parts[0] not in {"podcast", "series", "program", "tv_series", "tv_program"}
             or not parts[1]
             or not parts[2]
         ):
