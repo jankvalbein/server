@@ -366,19 +366,38 @@ class NRKProvider(MusicProvider):
                 continue
 
             if episode := self._client.tv_episode_from_plug(plug):
-                parent_title = episode.title
+                # PodcastEpisode is intentionally not a top-level MA library type:
+                # the frontend can play it, but it cannot be added to the Podcasts
+                # library. Surface the owning TV series/program as a Podcast instead.
                 raw = plug.get("episode")
+                parent_title = episode.title
                 if isinstance(raw, dict):
                     series_title = raw.get("seriesTitle")
                     if isinstance(series_title, str) and series_title:
                         parent_title = series_title
-                parent = ItemMapping(
-                    media_type=MediaType.PODCAST,
-                    item_id=self._show_id(episode.kind, episode.parent_id),
-                    provider=self.instance_id,
-                    name=parent_title,
-                )
-                items.append(self._episode_item(episode, parent, position=0))
+
+                if episode.kind == "tv_series":
+                    show = NRKShow(
+                        kind="tv_series",
+                        show_id=episode.parent_id,
+                        title=parent_title,
+                        subtitle=episode.title if episode.title != parent_title else None,
+                        image_url=episode.image_url,
+                    )
+                else:
+                    show = NRKShow(
+                        kind="tv_program",
+                        show_id=episode.episode_id,
+                        title=episode.title,
+                        subtitle=episode.subtitle,
+                        image_url=episode.image_url,
+                        total_episodes=1,
+                    )
+
+                item_id = self._show_id(show.kind, show.show_id)
+                if item_id not in seen_shows:
+                    seen_shows.add(item_id)
+                    items.append(self._podcast_item(show))
                 continue
 
             self.logger.debug(
