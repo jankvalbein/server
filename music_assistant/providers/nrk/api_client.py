@@ -350,17 +350,30 @@ class NRKAPIClient:
 
     def channel_from_plug(self, plug: dict[str, Any]) -> NRKChannel | None:
         """Convert a radio page channel plug into a normalized channel."""
-        link = link_href(plug.get("_links", {}).get("channel"))
-        channel_id = path_tail(link)
         raw = plug.get("channel")
-        if not channel_id or not isinstance(raw, dict):
+        if not isinstance(raw, dict):
             return None
+
+        channel_id = raw.get("channelId")
+        if not isinstance(channel_id, str) or not channel_id:
+            link = link_href(plug.get("_links", {}).get("channel"))
+            channel_id = path_tail(link)
+        if not channel_id:
+            return None
+
         titles = raw.get("titles") if isinstance(raw.get("titles"), dict) else {}
-        title = titles.get("title") or raw.get("title") or channel_id
+        title = (
+            raw.get("channelTitle")
+            or titles.get("title")
+            or raw.get("title")
+            or plug.get("title")
+            or channel_id
+        )
         return NRKChannel(
             channel_id=channel_id,
             title=str(title),
-            image_url=pick_image_url(raw.get("image")),
+            image_url=pick_image_url(raw.get("image"))
+            or pick_image_url(plug.get("image")),
         )
 
     def show_from_plug(self, plug: dict[str, Any]) -> NRKShow | None:
@@ -369,36 +382,54 @@ class NRKAPIClient:
         if plug_type == "podcast":
             kind: NRKShowKind = "podcast"
             raw = plug.get("podcast")
+            id_key = "podcastId"
+            title_key = "podcastTitle"
             link_key = "podcast"
         elif plug_type == "series":
             kind = "series"
             raw = plug.get("series")
+            id_key = "seriesId"
+            title_key = "seriesTitle"
             link_key = "series"
         elif plug_type == "standaloneProgram":
             kind = "program"
-            raw = plug.get("program")
+            raw = plug.get("standaloneProgram") or plug.get("program")
+            id_key = "programId"
+            title_key = "programTitle"
             link_key = "program"
         else:
             return None
 
         if not isinstance(raw, dict):
             return None
-        show_id = path_tail(link_href(plug.get("_links", {}).get(link_key)))
-        if not show_id:
-            show_id = str(raw.get("id")) if raw.get("id") else None
+
+        show_id = raw.get(id_key)
+        if not isinstance(show_id, str) or not show_id:
+            show_id = path_tail(link_href(plug.get("_links", {}).get(link_key)))
+        if not show_id and raw.get("id"):
+            show_id = str(raw["id"])
         if not show_id:
             return None
 
         titles = raw.get("titles") if isinstance(raw.get("titles"), dict) else {}
-        title = titles.get("title") or raw.get("title") or show_id
-        subtitle = titles.get("subtitle") or raw.get("subtitle")
+        title = (
+            raw.get(title_key)
+            or titles.get("title")
+            or raw.get("title")
+            or plug.get("title")
+            or show_id
+        )
+        subtitle = titles.get("subtitle") or raw.get("subtitle") or plug.get("tagline")
+        total = raw.get("numberOfEpisodes") or raw.get("episodeCount")
         return NRKShow(
             kind=kind,
             show_id=show_id,
             title=str(title),
             subtitle=str(subtitle) if subtitle else None,
             image_url=pick_image_url(raw.get("image"))
-            or pick_image_url(raw.get("imageUrl")),
+            or pick_image_url(raw.get("imageUrl"))
+            or pick_image_url(plug.get("image")),
+            total_episodes=int(total) if isinstance(total, (int, float)) else None,
         )
 
     def episode_from_plug(self, plug: dict[str, Any]) -> NRKEpisode | None:
@@ -409,8 +440,12 @@ class NRKAPIClient:
             if not isinstance(raw, dict):
                 return None
             links = plug.get("_links", {})
-            parent_id = path_tail(link_href(links.get("podcast")))
-            episode_id = path_tail(link_href(links.get("podcastEpisode")))
+            parent_id = raw.get("podcastId")
+            episode_id = raw.get("episodeId")
+            if not isinstance(parent_id, str) or not parent_id:
+                parent_id = path_tail(link_href(links.get("podcast")))
+            if not isinstance(episode_id, str) or not episode_id:
+                episode_id = path_tail(link_href(links.get("podcastEpisode")))
             if not parent_id or not episode_id:
                 return None
             return self._parse_episode(
@@ -424,15 +459,18 @@ class NRKAPIClient:
             raw = plug.get("episode")
             if not isinstance(raw, dict):
                 return None
-            episode_id = path_tail(link_href(plug.get("_links", {}).get("episode")))
+            episode_id = raw.get("programId") or raw.get("episodeId")
+            if not isinstance(episode_id, str) or not episode_id:
+                episode_id = path_tail(link_href(plug.get("_links", {}).get("episode")))
             if not episode_id:
                 return None
-            series = raw.get("series")
-            parent_id = None
-            if isinstance(series, dict):
-                parent_id = series.get("id")
-                if not parent_id:
-                    parent_id = path_tail(link_href(series.get("_links", {}).get("self")))
+            parent_id = raw.get("seriesId")
+            if not isinstance(parent_id, str) or not parent_id:
+                series = raw.get("series")
+                if isinstance(series, dict):
+                    parent_id = series.get("id")
+                    if not parent_id:
+                        parent_id = path_tail(link_href(series.get("_links", {}).get("self")))
             if not isinstance(parent_id, str) or not parent_id:
                 # A direct episode without a resolvable parent is represented as a one-off show.
                 parent_id = episode_id
@@ -543,9 +581,16 @@ class NRKAPIClient:
                 if usable:
                     return " - ".join(usable), None
 
-        title = data.get("title")
         subtitle = data.get("subtitle")
-        return (
-            title if isinstance(title, str) and title else fallback,
-            subtitle if isinstance(subtitle, str) and subtitle else None,
-        )
+        for key in (
+            "podcastEpisodeTitle",
+            "episodeTitle",
+            "programTitle",
+            "podcastTitle",
+            "seriesTitle",
+            "title",
+        ):
+            title = data.get(key)
+            if isinstance(title, str) and title:
+                return title, subtitle if isinstance(subtitle, str) and subtitle else None
+        return fallback, subtitle if isinstance(subtitle, str) and subtitle else None
