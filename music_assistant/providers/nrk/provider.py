@@ -63,6 +63,13 @@ SUPPORTED_FEATURES = {
 BROWSE_RADIO = "radio"
 BROWSE_TV = "tv"
 
+# Music Assistant's generic FFmpeg probe is intentionally tiny because ordinary
+# audio streams reveal their format almost immediately. NRK TV HLS variants also
+# contain H.264 video, so 8 KiB / 0.5 s can end before FFmpeg has seen enough AAC
+# packets to determine the audio channel layout. That presents as "AAC, 0 channels"
+# and FFmpeg refuses to create the PCM output stream.
+TV_HLS_PROBE_ARGS = ["-probesize", "1048576", "-analyzeduration", "5000000"]
+
 
 class NRKProvider(MusicProvider):
     """NRK Radio and archive provider."""
@@ -256,6 +263,16 @@ class NRKProvider(MusicProvider):
         else:
             content_type = ContentType.try_parse(stream.url)
 
+        extra_input_args = (
+            TV_HLS_PROBE_ARGS.copy()
+            if (
+                media_type == MediaType.PODCAST_EPISODE
+                and kind in {"tv_series", "tv_program"}
+                and is_hls
+            )
+            else []
+        )
+
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -266,6 +283,7 @@ class NRKProvider(MusicProvider):
             duration=stream.duration,
             can_seek=seekable,
             allow_seek=seekable,
+            extra_input_args=extra_input_args,
         )
 
     @use_cache(3600 * 6, base_class=NRKPage)
