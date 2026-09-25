@@ -3,7 +3,7 @@
   "domain": "nrk",
   "name": "NRK",
   "stage": "experimental",
-  "description": "Browse and play NRK live radio, radio programme archives and podcasts.",
+  "description": "Browse and play NRK radio, podcasts and NRK TV programmes as audio.",
   "codeowners": [
     "@jankvalbein"
   ],
