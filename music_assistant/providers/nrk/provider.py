@@ -107,26 +107,29 @@ class NRKProvider(MusicProvider):
         parts = [unquote(part) for part in subpath.split("/") if part]
 
         if not parts:
-            return [
-                BrowseFolder(
-                    item_id=BROWSE_RADIO,
-                    provider=self.instance_id,
-                    path=f"{self.instance_id}://{BROWSE_RADIO}",
-                    name="NRK Radio",
-                ),
-                BrowseFolder(
-                    item_id=BROWSE_PODCASTS,
-                    provider=self.instance_id,
-                    path=f"{self.instance_id}://{BROWSE_PODCASTS}",
-                    name="NRK Podkaster",
-                ),
-                BrowseFolder(
-                    item_id=BROWSE_TV,
-                    provider=self.instance_id,
-                    path=f"{self.instance_id}://{BROWSE_TV}",
-                    name="NRK TV (lyd)",
-                ),
-            ]
+            return sorted(
+                [
+                    BrowseFolder(
+                        item_id=BROWSE_RADIO,
+                        provider=self.instance_id,
+                        path=f"{self.instance_id}://{BROWSE_RADIO}",
+                        name="NRK Radio",
+                    ),
+                    BrowseFolder(
+                        item_id=BROWSE_PODCASTS,
+                        provider=self.instance_id,
+                        path=f"{self.instance_id}://{BROWSE_PODCASTS}",
+                        name="NRK Podkaster",
+                    ),
+                    BrowseFolder(
+                        item_id=BROWSE_TV,
+                        provider=self.instance_id,
+                        path=f"{self.instance_id}://{BROWSE_TV}",
+                        name="NRK TV (lyd)",
+                    ),
+                ],
+                key=lambda folder: folder.name.casefold(),
+            )
 
         if parts == [BROWSE_RADIO]:
             return [self._page_folder(page) for page in await self._get_pages()]
