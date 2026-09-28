@@ -8,8 +8,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from music_assistant.providers.nrk.api_client import NRKAPIClient
-from music_assistant.providers.nrk.models import NRKNotPlayableError
+from music_assistant.providers.nrk.api_client import NRKAPIClient, _merge_and_sort_sections
+from music_assistant.providers.nrk.models import NRKNotPlayableError, NRKSection
 
 
 class FakeResponse:
@@ -328,3 +328,39 @@ async def test_page_plug_metadata_normalizes_channel_and_episode_titles() -> Non
     assert series_episode.parent_id == "studio-2"
     assert series_episode.episode_id == "MUHR12345678"
     assert series_episode.title == "Dagens sending"
+
+
+def test_browse_sections_are_merged_and_sorted() -> None:
+    """Duplicate section names are merged and folders are sorted alphabetically."""
+    duplicate_plug = {
+        "targetType": "series",
+        "series": {"seriesId": "shared"},
+    }
+    sections = [
+        NRKSection(
+            title="NRK TV",
+            plugs=(
+                duplicate_plug,
+                {"targetType": "series", "series": {"seriesId": "second"}},
+            ),
+        ),
+        NRKSection(
+            title="Mest sett",
+            plugs=({"targetType": "series", "series": {"seriesId": "popular"}},),
+        ),
+        NRKSection(
+            title="  nrk   tv  ",
+            plugs=(
+                duplicate_plug,
+                {"targetType": "series", "series": {"seriesId": "third"}},
+            ),
+        ),
+    ]
+
+    result = _merge_and_sort_sections(sections)
+
+    assert [section.title for section in result] == ["Mest sett", "NRK TV"]
+    assert [
+        plug["series"]["seriesId"]
+        for plug in result[1].plugs
+    ] == ["shared", "second", "third"]
