@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -50,6 +51,44 @@ HEADERS: Final = {
     "Accept": "application/json",
     "User-Agent": "MusicAssistant-NRK/0.1 (+https://music-assistant.io)",
 }
+
+
+def _normalize_section_title(title: str) -> str:
+    """Normalize an NRK section title for grouping and sorting."""
+    return " ".join(title.split()).casefold()
+
+
+def _merge_and_sort_sections(sections: list[NRKSection]) -> list[NRKSection]:
+    """Merge duplicate section names and return folders in alphabetical order."""
+    grouped: dict[str, tuple[str, list[dict[str, Any]], set[str]]] = {}
+
+    for section in sections:
+        normalized_title = _normalize_section_title(section.title)
+        if normalized_title not in grouped:
+            grouped[normalized_title] = (section.title.strip(), [], set())
+
+        display_title, plugs, seen_plugs = grouped[normalized_title]
+        for plug in section.plugs:
+            plug_key = json.dumps(
+                plug,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            )
+            if plug_key in seen_plugs:
+                continue
+            seen_plugs.add(plug_key)
+            plugs.append(plug)
+
+        grouped[normalized_title] = (display_title, plugs, seen_plugs)
+
+    merged = [
+        NRKSection(title=display_title, plugs=tuple(plugs))
+        for display_title, plugs, _seen_plugs in grouped.values()
+        if plugs
+    ]
+    return sorted(merged, key=lambda section: _normalize_section_title(section.title))
 
 
 class NRKAPIClient:
@@ -185,7 +224,7 @@ class NRKAPIClient:
                     or pick_image_url(raw.get("image")),
                 )
             )
-        return pages
+        return sorted(pages, key=lambda page: page.title.casefold())
 
     async def get_radio_page(self, page_id: str) -> list[NRKSection]:
         """Return all sections and plugs for one NRK Radio page."""
@@ -205,7 +244,7 @@ class NRKAPIClient:
                     plugs=plugs,
                 )
             )
-        return sections
+        return _merge_and_sort_sections(sections)
 
     async def get_tv_pages(self) -> list[NRKPage]:
         """Return browse pages exposed by NRK TV."""
@@ -240,7 +279,7 @@ class NRKAPIClient:
                     image_url=pick_image_url(raw.get("image")),
                 )
             )
-        return pages
+        return sorted(pages, key=lambda page: page.title.casefold())
 
     async def get_tv_page(self, page_id: str) -> list[NRKSection]:
         """Return all sections and plugs for one NRK TV page."""
@@ -263,7 +302,7 @@ class NRKAPIClient:
                         plugs=plugs,
                     )
                 )
-        return sections
+        return _merge_and_sort_sections(sections)
 
     async def get_show(self, kind: NRKShowKind, show_id: str) -> NRKShow:
         """Fetch podcast/radio/TV programme metadata."""
