@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote
 
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
@@ -31,6 +32,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_PODCASTS
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
@@ -49,7 +51,7 @@ from .models import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -58,9 +60,19 @@ if TYPE_CHECKING:
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
+    ProviderFeature.LIBRARY_PODCASTS,
 }
 
+CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_LIBRARY_SYNC_PODCASTS.to_dict(),
+        "hidden": True,
+        "default_value": True,
+    }
+)
+
 BROWSE_RADIO = "radio"
+BROWSE_PODCASTS = "podcasts"
 BROWSE_TV = "tv"
 
 # Music Assistant's generic FFmpeg probe is intentionally tiny because ordinary
@@ -82,8 +94,8 @@ class NRKProvider(MusicProvider):
         return {MediaType.RADIO, MediaType.PODCAST, MediaType.PODCAST_EPISODE}
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """NRK Radio playback does not require configuration."""
-        return ()
+        """Return provider configuration entries."""
+        return (CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,)
 
     async def handle_async_init(self) -> None:
         """Initialize the NRK API client."""
@@ -101,6 +113,12 @@ class NRKProvider(MusicProvider):
                     provider=self.instance_id,
                     path=f"{self.instance_id}://{BROWSE_RADIO}",
                     name="NRK Radio",
+                ),
+                BrowseFolder(
+                    item_id=BROWSE_PODCASTS,
+                    provider=self.instance_id,
+                    path=f"{self.instance_id}://{BROWSE_PODCASTS}",
+                    name="NRK Podkaster",
                 ),
                 BrowseFolder(
                     item_id=BROWSE_TV,
@@ -152,6 +170,20 @@ class NRKProvider(MusicProvider):
                 raise KeyError(path)
             return self._render_section(sections[section_index])
 
+        if parts == [BROWSE_PODCASTS]:
+            sections = await self._get_page("podcast")
+            return self._podcast_section_folders(sections)
+
+        if len(parts) == 2 and parts[0] == BROWSE_PODCASTS:
+            try:
+                section_index = int(parts[1])
+            except ValueError as err:
+                raise KeyError(path) from err
+            sections = await self._get_page("podcast")
+            if section_index < 0 or section_index >= len(sections):
+                raise KeyError(path)
+            return self._render_section(sections[section_index])
+
         if parts == [BROWSE_TV]:
             return [self._tv_page_folder(page) for page in await self._get_tv_pages()]
 
@@ -199,6 +231,34 @@ class NRKProvider(MusicProvider):
         # A channel can remain playable after it drops out of a curated page. Keep the id
         # resolvable; get_stream_details will make the authoritative playback check.
         return self._radio_item(NRKChannel(channel_id=channel_id, title=channel_id))
+
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
+        """Refresh podcasts the user has added to the Music Assistant library."""
+        library_items = await self.mass.music.podcasts.get_library_items_by_prov_id(
+            provider_instance=self.instance_id
+        )
+        for item in library_items:
+            mapping = next(
+                (
+                    prov_mapping
+                    for prov_mapping in item.provider_mappings
+                    if prov_mapping.provider_instance == self.instance_id
+                ),
+                None,
+            )
+            if mapping is None:
+                continue
+            try:
+                yield await self.get_podcast(mapping.item_id)
+            except (MediaNotFoundError, NRKNotFoundError) as err:
+                self.logger.warning(
+                    "Could not refresh NRK podcast %s: %s",
+                    item.name,
+                    err,
+                )
+                item.item_id = mapping.item_id
+                item.provider_mappings = {mapping}
+                yield item
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Return one NRK podcast/radio-series abstraction."""
@@ -405,6 +465,21 @@ class NRKProvider(MusicProvider):
                 plug.get("targetType"),
             )
         return items
+
+    def _podcast_section_folders(
+        self, sections: list[NRKSection]
+    ) -> list[BrowseFolder]:
+        """Build clean browse folders for NRK's podcast landing page."""
+        return [
+            BrowseFolder(
+                item_id=f"podcasts:{idx}",
+                provider=self.instance_id,
+                path=f"{self.instance_id}://{BROWSE_PODCASTS}/{idx}",
+                name=section.title,
+            )
+            for idx, section in enumerate(sections)
+            if section.plugs
+        ]
 
     def _tv_section_folders(
         self, page_id: str, sections: list[NRKSection]
