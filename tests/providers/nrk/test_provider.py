@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import Podcast, ProviderMapping
+from music_assistant_models.media_items import Podcast, ProviderMapping, Radio
 
 from music_assistant.providers.nrk.models import NRKEpisode, NRKShow
 from music_assistant.providers.nrk.provider import NRKProvider
@@ -22,6 +22,7 @@ def _create_provider() -> NRKProvider:
     provider.manifest.domain = "nrk"
     provider.mass = MagicMock()
     provider.mass.music.podcasts.get_library_items_by_prov_id = AsyncMock(return_value=[])
+    provider.mass.music.radio.get_library_items_by_prov_id = AsyncMock(return_value=[])
     provider.logger = MagicMock()
     return provider
 
@@ -129,12 +130,66 @@ async def test_tv_series_episodes_keep_stable_library_ids_and_parent() -> None:
     assert [episode.duration for episode in result] == [3120, 3180]
 
 
+async def test_library_radios_refresh_existing_nrk_items() -> None:
+    """A user-added NRK radio station is refreshed from current NRK metadata."""
+    provider = _create_provider()
+    mapping = ProviderMapping(
+        item_id="radio/nrk-p1",
+        provider_domain="nrk",
+        provider_instance="nrk",
+    )
+    stored = Radio(
+        item_id="321",
+        provider="library",
+        name="Old P1 title",
+        provider_mappings={mapping},
+    )
+    provider.mass.music.radio.get_library_items_by_prov_id = AsyncMock(return_value=[stored])
+    fresh = Radio(
+        item_id="radio/nrk-p1",
+        provider="nrk",
+        name="NRK P1",
+        provider_mappings={mapping},
+    )
+    provider.get_radio = AsyncMock(return_value=fresh)
+
+    result = [item async for item in provider.get_library_radios()]
+
+    assert result == [fresh]
+    provider.get_radio.assert_awaited_once_with("radio/nrk-p1")
+
+
+async def test_library_radios_keep_item_when_nrk_lookup_fails() -> None:
+    """A transient NRK lookup failure must not silently delete a saved radio station."""
+    provider = _create_provider()
+    mapping = ProviderMapping(
+        item_id="radio/nrk-p2",
+        provider_domain="nrk",
+        provider_instance="nrk",
+    )
+    stored = Radio(
+        item_id="654",
+        provider="library",
+        name="NRK P2",
+        provider_mappings={mapping},
+    )
+    provider.mass.music.radio.get_library_items_by_prov_id = AsyncMock(return_value=[stored])
+    provider.get_radio = AsyncMock(side_effect=MediaNotFoundError("temporary failure"))
+
+    result = [item async for item in provider.get_library_radios()]
+
+    assert len(result) == 1
+    assert result[0].item_id == "radio/nrk-p2"
+    assert result[0].name == "NRK P2"
+    assert result[0].provider_mappings == {mapping}
+
+
 async def test_library_sync_config_is_hidden_and_enabled() -> None:
-    """NRK's MA-local podcast library sync stays enabled without exposing a confusing toggle."""
+    """NRK's MA-local podcast and radio sync stays enabled without confusing toggles."""
     provider = _create_provider()
 
     entries = await provider.get_config_entries()
 
-    assert len(entries) == 1
-    assert entries[0].hidden is True
-    assert entries[0].default_value is True
+    assert len(entries) == 2
+    assert all(entry.hidden is True for entry in entries)
+    assert all(entry.default_value is True for entry in entries)
