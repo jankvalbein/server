@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import Podcast, ProviderMapping, Radio
 
 from music_assistant.providers.nrk.models import NRKEpisode, NRKShow
@@ -174,7 +174,9 @@ async def test_library_radios_keep_item_when_nrk_lookup_fails() -> None:
         provider_mappings={mapping},
     )
     provider.mass.music.radio.get_library_items_by_prov_id = AsyncMock(return_value=[stored])
-    provider.get_radio = AsyncMock(side_effect=MediaNotFoundError("temporary failure"))
+    provider.get_radio = AsyncMock(
+        side_effect=ResourceTemporarilyUnavailable("temporary failure")
+    )
 
     result = [item async for item in provider.get_library_radios()]
 
