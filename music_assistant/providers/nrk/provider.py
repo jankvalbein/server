@@ -32,7 +32,10 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_PODCASTS
+from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_RADIOS,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
@@ -61,11 +64,20 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_RADIOS,
 }
 
 CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN = ConfigEntry.from_dict(
     {
         **CONF_ENTRY_LIBRARY_SYNC_PODCASTS.to_dict(),
+        "hidden": True,
+        "default_value": True,
+    }
+)
+
+CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_LIBRARY_SYNC_RADIOS.to_dict(),
         "hidden": True,
         "default_value": True,
     }
@@ -95,7 +107,10 @@ class NRKProvider(MusicProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return provider configuration entries."""
-        return (CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,)
+        return (
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
+            CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
+        )
 
     async def handle_async_init(self) -> None:
         """Initialize the NRK API client."""
@@ -234,6 +249,34 @@ class NRKProvider(MusicProvider):
         # A channel can remain playable after it drops out of a curated page. Keep the id
         # resolvable; get_stream_details will make the authoritative playback check.
         return self._radio_item(NRKChannel(channel_id=channel_id, title=channel_id))
+
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
+        """Refresh radio stations the user has added to the Music Assistant library."""
+        library_items = await self.mass.music.radio.get_library_items_by_prov_id(
+            provider_instance=self.instance_id
+        )
+        for item in library_items:
+            mapping = next(
+                (
+                    prov_mapping
+                    for prov_mapping in item.provider_mappings
+                    if prov_mapping.provider_instance == self.instance_id
+                ),
+                None,
+            )
+            if mapping is None:
+                continue
+            try:
+                yield await self.get_radio(mapping.item_id)
+            except (MediaNotFoundError, NRKNotFoundError) as err:
+                self.logger.warning(
+                    "Could not refresh NRK radio station %s: %s",
+                    item.name,
+                    err,
+                )
+                item.item_id = mapping.item_id
+                item.provider_mappings = {mapping}
+                yield item
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Refresh podcasts the user has added to the Music Assistant library."""
