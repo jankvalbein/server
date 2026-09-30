@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
     UnplayableMediaError,
 )
 from music_assistant_models.media_items import (
@@ -268,7 +269,7 @@ class NRKProvider(MusicProvider):
                 continue
             try:
                 yield await self.get_radio(mapping.item_id)
-            except (MediaNotFoundError, NRKNotFoundError) as err:
+            except (MediaNotFoundError, NRKNotFoundError, ResourceTemporarilyUnavailable) as err:
                 self.logger.warning(
                     "Could not refresh NRK radio station %s: %s",
                     item.name,
@@ -296,7 +297,7 @@ class NRKProvider(MusicProvider):
                 continue
             try:
                 yield await self.get_podcast(mapping.item_id)
-            except (MediaNotFoundError, NRKNotFoundError) as err:
+            except (MediaNotFoundError, NRKNotFoundError, ResourceTemporarilyUnavailable) as err:
                 self.logger.warning(
                     "Could not refresh NRK podcast %s: %s",
                     item.name,
